@@ -29,9 +29,12 @@
 - [2. 三步速通](#2-三步速通给急性子)
 - [3. 详细步骤](#3-详细步骤)
 - [4. 原理](#4-原理这个漏洞到底是什么)
+  - [4.5 另一条链 set_global_enable](#45-另一条链set_global_enable)（→ 独立文档）
 - [5. 排错：四个必踩的坑](#5-排错四个必踩的坑)
 - [6. FAQ](#faq-zh)
 - [7. 附录](#7-附录)
+- **[附：README_SET_GLOBAL_ENABLE.md](README_SET_GLOBAL_ENABLE.md)** —— 第二条链
+  `set_global_enable` 的完整说明（调用链 / 载荷 / 60 份固件普查 / 用法）
 
 ---
 
@@ -49,6 +52,15 @@
 
 **未验证但可能适用的**：BE3600 Pro 非网线版、BE6500 Pro 等其它新型号。
 如果你测成功了，欢迎提 issue 告诉我型号 + 固件版本，我会补进这张表。
+
+> **本仓库现在有两条链**：
+> `set_macfilter_rules` 是上面这张表（本页 §1–§7，脚本 `tools/exploit_set_macfilter_rules.py`）；
+> 另一条 `set_global_enable` 下游是 `milog.sh` 而不是 `macfilter`，适用范围也不同
+> —— 60 份官方固件普查里命中 12 个型号。两者**有重叠但不等价**，RP01 两条都通。
+> 某条打不通时，换另一条试试。
+>
+> **第二条链的完整说明 → [README_SET_GLOBAL_ENABLE.md](README_SET_GLOBAL_ENABLE.md)**
+> （调用链、三条实测陷阱、载荷、适用范围普查表、脚本用法）
 
 #### 为什么 xmir-patcher 在这台机器上没用
 
@@ -204,6 +216,15 @@ nc -vz 192.168.31.1 22      # 应显示 succeeded
 | `--cmd 'id'` | 执行任意命令 |
 | `--cmd 'uname -a' --exfil 192.168.31.100:8001` | 把命令输出回传到你的电脑 |
 | `--no-auth` | 跳过登录直接打（会先要求你确认设备所有权） |
+| `tools/exploit_set_global_enable.py` | **另一条链**的利用脚本，完整说明见 [README_SET_GLOBAL_ENABLE.md](README_SET_GLOBAL_ENABLE.md)（含 60 份固件普查出的适用范围）；**需要登录**，没有 `--no-auth` |
+
+```bash
+# 另一条链：RP01 两条都通，某条打不通时换另一条试试
+python3 tools/exploit_set_global_enable.py --ip 192.168.31.1 --password 你的WEB密码
+```
+
+> 第二条链的参数与排错（陷阱表、为什么首行不能用 `|`、为什么 `upper()` 会吃掉字母取反）
+> 都写在 [README_SET_GLOBAL_ENABLE.md](README_SET_GLOBAL_ENABLE.md) 里，这里不重复。
 
 > `--no-auth` 绕过了"需要提供 WEB 密码"这个授权门槛，所以它**默认会停下来要你确认**
 > 目标设备为你本人所有；在脚本/管道等非交互环境里，必须显式加 `--confirm-owner` 才会执行。
@@ -296,7 +317,7 @@ nvram set ssh_en=1; nvram set telnet_en=1; nvram set uart_en=1; nvram commit
 > `1 3,4,5 * * * /usr/sbin/otapredownload`，那是小米每天凌晨 3/4/5 点的 OTA 预下载任务，
 > 它内部的 `ota_upgrade()` 才是真正会拉新固件的通道（Web 后台的"自动升级"开关
 > 改的只是 `otapred.settings.auto`）。去掉它可以避免某天夜里被静默升级，
-> 详见 [FAQ](#q固件会自动升级吗root-会丢吗)。除了这一条，其余出厂任务都保留了。
+> 详见 [FAQ](#faq-ota)。除了这一条，其余出厂任务都保留了。
 
 #### 3.5 备份 flash（强烈建议）
 
@@ -400,6 +421,24 @@ set_user(){
 就是 `mkxqimage -I` 的输出。`mkxqimage` 读 `nvram get SN`，算法为
 `MD5(SN + "6d2df50a-250f-4a30-a5e6-d44fb0960aa0")` 的前 8 位。
 
+#### 4.5 另一条链：set_global_enable
+
+本仓库还有**第二条独立的链** —— `api/device_security/local_access/set_global_enable`。
+它和 4.1 这条不是一回事，两条链的差别：
+
+| | 本页这条（4.1） | 另一条（4.5） |
+|---|---|---|
+| 接口 | `api/xqsystem/set_macfilter_rules` | `api/device_security/local_access/set_global_enable` |
+| 参数过滤 | `XQParam` / hackCheck | `formvalue()` 无参调用，取整个表 |
+| 注入参数 | `rulename` | `mac` |
+| 下游 sink | `os.execute("/usr/sbin/macfilter add black …")` | `os.execute("milog.sh -m '{…}'")` |
+| 是否需要登录 | 可用 `--no-auth` | **必须登录**（sysauth=admin） |
+| 适用范围 | RP01 / RP02 实测 | 60 份固件普查命中 12 个型号 |
+
+**完整说明与利用脚本见 → [README_SET_GLOBAL_ENABLE.md](README_SET_GLOBAL_ENABLE.md)**
+
+> RP01 两条链都通。某条打不通时，换另一条试试。
+
 ---
 
 ### 5. 排错：四个必踩的坑
@@ -470,6 +509,8 @@ base64 /tmp/m.bin > /tmp/m.b64     # 全 ASCII，无 NUL
 不会。消失是因为把 `CHANNEL` 从 `release` 改成 `debug`（小米检测到开发版就踢出米家）。
 本教程**完全不碰 CHANNEL**。而且这个机型 `/` 是只读 squashfs、`/usr` 上没有 overlay，
 那个文件**想改也改不了**。
+
+<a id="faq-ota"></a>
 
 **Q：固件会自动升级吗？root 会丢吗？**
 
@@ -554,7 +595,9 @@ uci commit dhcp && /etc/init.d/dnsmasq restart
 | 文件 | 作用 |
 |---|---|
 | `tools/calc_root_pwd.py` | 由 SN 计算 root 密码，含 14 组自测样本 |
-| `tools/exploit_set_macfilter_rules.py` | 漏洞利用（单接口、自研、无自动探测） |
+| `tools/exploit_set_macfilter_rules.py` | 漏洞利用 —— `set_macfilter_rules` 链（单接口、自研、无自动探测） |
+| `tools/exploit_set_global_enable.py` | 漏洞利用 —— `set_global_enable` 链（另一条链，见 [README_SET_GLOBAL_ENABLE.md](README_SET_GLOBAL_ENABLE.md)） |
+| [`README_SET_GLOBAL_ENABLE.md`](README_SET_GLOBAL_ENABLE.md) | **第二条链的完整文档**：调用链、三条实测陷阱、载荷逐行注解、60 份固件普查、用法与排错 |
 | `tools/recv_backup.py` | flash 备份接收端，自动 base64 解码 + 大小校验 |
 
 #### 关于 xmir-patcher 的自动探测
@@ -619,9 +662,12 @@ firmware — no disassembly, no UART soldering, no downgrade, and no xmir-patche
 - [2. Quick Start](#2-quick-start-for-the-impatient)
 - [3. Step by Step](#3-step-by-step)
 - [4. How the Vulnerability Works](#4-how-the-vulnerability-works)
+  - [4.5 The other chain: `set_global_enable`](#45-the-other-chain-set_global_enable) (→ separate doc)
 - [5. Troubleshooting: Four Traps](#5-troubleshooting-four-traps)
 - [6. FAQ](#faq-en)
 - [7. Appendix](#7-appendix)
+- **[Appendix: README_SET_GLOBAL_ENABLE.md](README_SET_GLOBAL_ENABLE.md)** — full write-up for
+  the second chain `set_global_enable` (call chain / payload / 60-firmware census / usage)
 
 ---
 
@@ -640,6 +686,16 @@ rather than being specific to one build.
 
 **Not verified, but may work:** the non-wired BE3600 Pro, BE6500 Pro, and other recent
 models. If you succeed, please open an issue with your model + firmware version.
+
+> **This repo now covers two chains**:
+> `set_macfilter_rules` is the table above (this page, §1–§7, script
+> `tools/exploit_set_macfilter_rules.py`); the other one, `set_global_enable`, sinks into
+> `milog.sh` rather than `macfilter` and has a different scope — 12 models out of a
+> 60-image official firmware census. They **overlap but are not equivalent**; RP01 works
+> with both. If one fails, try the other.
+>
+> **Full write-up for the second chain → [README_SET_GLOBAL_ENABLE.md](README_SET_GLOBAL_ENABLE.md)**
+> (call chain, three measured traps, payload, scope census, usage)
 
 #### Why xmir-patcher doesn't work here
 
@@ -762,6 +818,16 @@ Other options:
 | `--cmd 'id'` | Run an arbitrary command |
 | `--cmd 'uname -a' --exfil 192.168.31.100:8001` | Send command output back to your computer |
 | `--no-auth` | Skip login (will ask you to confirm device ownership first) |
+| `tools/exploit_set_global_enable.py` | **The other chain** — full write-up in [README_SET_GLOBAL_ENABLE.md](README_SET_GLOBAL_ENABLE.md), including the 60-firmware census scope. Requires login, no `--no-auth` option |
+
+```bash
+# The other chain: RP01 works with both; if one fails, try the other
+python3 tools/exploit_set_global_enable.py --ip 192.168.31.1 --password YOUR_WEB_PASSWORD
+```
+
+> The second chain's flags and troubleshooting (the trap table, why the first line can't end
+> with `|`, why `upper()` destroys letter-based bracket negation) all live in
+> [README_SET_GLOBAL_ENABLE.md](README_SET_GLOBAL_ENABLE.md) — not repeated here.
 
 #### 3.3 Log in
 
@@ -950,6 +1016,24 @@ The stock config has no `INITTED` key, so this always runs on first boot. `mkxqi
 reads `nvram get SN` and computes
 `MD5(SN + "6d2df50a-250f-4a30-a5e6-d44fb0960aa0")`, taking the first 8 characters.
 
+#### 4.5 The other chain: `set_global_enable`
+
+This repo documents a **second, independent chain** —
+`api/device_security/local_access/set_global_enable`. How the two differ:
+
+| | This page (4.1) | The other chain (4.5) |
+|---|---|---|
+| Endpoint | `api/xqsystem/set_macfilter_rules` | `api/device_security/local_access/set_global_enable` |
+| Param filtering | `XQParam` / hackCheck | `formvalue()` with no argument (whole table) |
+| Injected param | `rulename` | `mac` |
+| Downstream sink | `os.execute("/usr/sbin/macfilter add black …")` | `os.execute("milog.sh -m '{…}'")` |
+| Login required | no (`--no-auth`) | **yes** (sysauth=admin) |
+| Scope | RP01 / RP02, measured | 12 models out of a 60-image census |
+
+**Full write-up and exploit script → [README_SET_GLOBAL_ENABLE.md](README_SET_GLOBAL_ENABLE.md)**
+
+> RP01 works with both chains. If one fails, try the other.
+
 ---
 
 ### 5. Troubleshooting: Four Traps
@@ -1080,7 +1164,9 @@ want to upgrade deliberately.**
 | File | Purpose |
 |---|---|
 | `tools/calc_root_pwd.py` | Derive the root password from the SN; includes a 14-case self-test |
-| `tools/exploit_set_macfilter_rules.py` | The exploit (single endpoint, self-written, no auto-probing) |
+| `tools/exploit_set_macfilter_rules.py` | The exploit for the `set_macfilter_rules` chain (single endpoint, self-written, no auto-probing) |
+| `tools/exploit_set_global_enable.py` | The exploit for the other chain, `set_global_enable` (see [README_SET_GLOBAL_ENABLE.md](README_SET_GLOBAL_ENABLE.md)) |
+| [`README_SET_GLOBAL_ENABLE.md`](README_SET_GLOBAL_ENABLE.md) | **Full doc for the second chain**: call chain, three measured traps, annotated payload, 60-firmware census, usage and troubleshooting |
 | `tools/recv_backup.py` | Flash backup receiver; auto base64-decodes and size-checks |
 
 #### On xmir-patcher's auto-probe
